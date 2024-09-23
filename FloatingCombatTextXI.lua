@@ -1,19 +1,3 @@
---[[ 
-* FloatingCombatTextXI - Copyright (c) 2024 Oxos
-* Based on code from Ashita (bitreader), Copyright (c) 2024 Ashita Development Team
-* Licensed under the GNU General Public License v3.0 
-* (https://www.gnu.org/licenses/gpl-3.0.html)
-* 
-* This file includes portions of the Ashita project. Ashita is free software: 
-* you can redistribute it and/or modify it under the terms of the GNU General 
-* Public License as published by the Free Software Foundation, either version 
-* 3 of the License, or any later version. 
-*
-* Ashita is distributed in the hope that it will be useful, but WITHOUT ANY 
-* WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS 
-* FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
---]]
-
 -- Required modules
 local breader = require('bitreader')
 
@@ -34,81 +18,94 @@ local function parse_combat_packet(data)
     reader:set_data(data)
     reader:set_pos(5)  -- Start after header
 
-    local actor_id = reader:read(32)  -- Actor ID
-    local target_sum = reader:read(6)
-    local result_sum = reader:read(4)
-    local cmd_no = reader:read(4)  -- Command number (attack, magic, etc.)
-    local cmd_arg = reader:read(32)  -- Arguments for the command
-    local info = reader:read(32)  -- Action info
-    
-    -- Check if the actor is the player
-    if actor_id ~= my_actor_id then
-        return nil, nil, nil  -- Not the player's action, ignore it
+    local action = {}
+    action.actor_id = reader:read(32)  -- Actor ID
+    action.target_count = reader:read(6)
+    action.result_count = reader:read(4)
+    action.command = reader:read(4)
+    action.command_arg = reader:read(32)
+    action.info = reader:read(32)
+    action.targets = {}
+
+    -- Ensure that we only process packets related to the player
+    if action.actor_id ~= my_actor_id then
+        return nil, nil, nil
     end
 
-    local targets = {}
-    for i = 1, target_sum do
+    -- Loop through each target in the packet
+    for i = 1, action.target_count do
         local target = {}
         target.id = reader:read(32)  -- Target ID
-        target.result_sum = reader:read(4)
-        
-        -- Parse results (damage, crit, etc.)
+        target.result_count = reader:read(4)
         target.results = {}
-        for j = 1, target.result_sum do
+
+        -- Handle each result (hit) for the target
+        for j = 1, target.result_count do
             local result = {}
             result.miss = reader:read(3)
-            result.kind = reader:read(2)  -- Kind: Regular hit or special
-            result.sub_kind = reader:read(12)  -- Track the sub_kind for multiple hits
+            result.kind = reader:read(2)
+            result.sub_kind = reader:read(12)
             result.info = reader:read(5)
             result.scale = reader:read(5)
-            result.damage = reader:read(17)  -- DAMAGE VALUE
-            result.message = reader:read(10)  -- Check message for crits or special conditions
 
-            -- Store each result in the table
+            -- Read damage for this hit
+            result.damage = reader:read(17)
+
+            -- Adjust for the second hit being scaled (4x issue)
+            if j > 1 then
+                result.damage = result.damage / 4
+            end
+            if j > 2 then
+                result.damage = result.damage / 16
+            end
+            if j > 3 then
+                result.damage = result.damage / 32
+            end
+            if j > 4 then
+                result.damage = result.damage / 64
+            end
+            if j > 5 then
+                result.damage = result.damage / 128
+            end
+
+            result.message = reader:read(10)
+            result.bit = reader:read(31)
+
+            -- Store the parsed result in the results table
             table.insert(target.results, result)
         end
 
-        table.insert(targets, target)
+        -- Add the target to the action's targets table
+        table.insert(action.targets, target)
     end
 
-    return actor_id, cmd_no, targets
+    return action
 end
 
 -- Register for incoming packets
 ashita.events.register('packet_in', 'IncomingPacket', function(e)
     if e.id == 0x028 then  -- Check for combat packets
-        local actor_id, cmd_no, targets = parse_combat_packet(e.data)
-        if not actor_id then
+        local action = parse_combat_packet(e.data)
+        if not action then
             return  -- Ignore if it's not the player's packet
         end
 
-        -- Store and print damage for the player
-        for _, target in ipairs(targets) do
-            -- Print all hits related to this action
-            for index, result in ipairs(target.results) do
+        -- Iterate over all targets and their results (hits)
+        for _, target in ipairs(action.targets) do
+            local damage_list = {}
+
+            -- Iterate through each result within the target
+            for _, result in ipairs(target.results) do
                 if result.damage > 0 then
-                    -- Track each hit separately
-                    local hit_type = "Regular"
-                    if result.message == 67 then
-                        hit_type = "Critical"
-                    end
-
-                    -- Store the event in the player_damage table
-                    local dmg_event = {
-                        target_id = target.id,
-                        damage = result.damage,
-                        hit_type = hit_type,
-                        hit_index = index,  -- Track which hit this is
-                        time = os.date("%H:%M:%S"),
-                    }
-
-                    table.insert(player_damage, dmg_event)
-
-                    -- Print each damage event for debugging
-                    print(string.format("%s: You hit target ID %d for %d damage (%s) [Hit %d]", 
-                        dmg_event.time, dmg_event.target_id, dmg_event.damage, dmg_event.hit_type, dmg_event.hit_index))
+                    -- Collect each hit's damage value
+                    table.insert(damage_list, result.damage)
                 end
             end
+
+            -- Output the collected damage for the target
+            local damage_string = table.concat(damage_list, ", ")
+            print(string.format("%s: You hit target ID %d for Damage: %s", 
+                os.date("%H:%M:%S"), target.id, damage_string))
         end
     end
 end)
@@ -119,9 +116,8 @@ ashita.events.register('command', 'CommandEvent', function(e)
     if args[1] == '/damagelog' then
         -- Output all logged damage
         for i, event in ipairs(player_damage) do
-            print(string.format("%s: You hit target ID %d for %d damage (%s) [Hit %d]", 
-                event.time, event.target_id, event.damage, 
-                event.hit_type, event.hit_index))
+            print(string.format("%s: You hit target ID %d for Damage: %d", 
+                event.time, event.target_id, event.damage))
         end
         return true
     end
