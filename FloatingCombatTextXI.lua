@@ -4,17 +4,26 @@ local imgui = require('imgui')
 
 addon.name = 'FloatingCombatTextXI'
 addon.author = 'Oxos'
-addon.version = '1.2'
-addon.description = 'Logs and displays player damage from combat logs as floating text with separate sections for melee, weapon skills, and spells.'
+addon.version = '1.0'
+addon.description = 'Logs and displays player damage from combat logs as floating text with separate sections for melee, weapon skills, and spells, with crits and misses.'
 
 require('common')
+
+local my_custom_font = nil  -- Declare font globally
+
+-- ashita.events.register('load', 'addon_load', function()
+--     -- Load the custom font from the provided file path
+--     local font_path = '"D:/CatsXI/catseyexi-client/Ashita/addons/FloatingCombatTextXI/LondrinaOutline-Regular.ttf"/LondrinaOutline-Regular.ttf'  -- Update with the correct path
+--     my_custom_font = imgui.AddFontFromFileTTF(font_path, 24.0)  -- Load the font with size 24.0
+-- end)
+
 
 -- Table to store player damage events with timestamps
 local damage_display = {}
 local my_actor_id = AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0)  -- Get player's server ID
 
 -- Function to display floating damage with X-offset and Y-offset based on screen position
-local function display_floating_damage(damage, index, is_weapon_skill, is_spell)
+local function display_floating_damage(damage, index, is_weapon_skill, is_spell, is_crit, is_miss)
     -- Dynamically retrieve screen dimensions
     local screen_width = imgui.GetIO().DisplaySize.x
     local screen_height = imgui.GetIO().DisplaySize.y
@@ -30,16 +39,24 @@ local function display_floating_damage(damage, index, is_weapon_skill, is_spell)
         x_position = center_x  -- Middle of the screen for weapon skills
         y_position = center_y - 350
     elseif is_spell then
-        x_position = center_x + 350 -- Right for spells
-        --y_position = center_y + 250
+        x_position = center_x + 250 -- Right for spells
     else
-        x_position = center_x - 350 -- Left for melee/normal hits
-        --y_position = center_y + 250
+        x_position = center_x - 500 -- Left for melee/normal hits
+    end
+
+    -- Determine the display text based on crits, misses, or normal hits
+    local display_text = ""
+    if is_miss then
+        display_text = "Miss"
+    elseif is_crit then
+        display_text = tostring(damage) .. " (Crit)"
+    else
+        display_text = tostring(damage)
     end
 
     -- Add a new entry to the damage display table with appropriate positioning
     table.insert(damage_display, {
-        damage = damage,
+        text = display_text,
         is_weapon_skill = is_weapon_skill,
         is_spell = is_spell,
         start_time = os.clock(),
@@ -78,21 +95,26 @@ ashita.events.register('packet_in', 'IncomingPacket', function(e)
             return  -- Skip the action without displaying any damage value
         end
 
-
         -- Iterate over all targets and their results (hits)
-        local hit_index = 0
         for _, target in ipairs(action.target) do
-            for _, result in ipairs(target.result) do
-                -- Only display values if the result has actual damage and is part of a relevant action
+            for i = #target.result, 1, -1 do
+                local result = target.result[i]
+                
+                -- Check for miss or crit
+                local is_miss = (result.miss == 1)
+                local is_crit = (result.message == 67)  -- Replace with actual crit message ID
+
+                -- Only display values if the result has actual damage or is a miss
                 if result.value > 0 then
-                    display_floating_damage(result.value, hit_index, is_weapon_skill, is_spell)
+                    display_floating_damage(result.value, 0, is_weapon_skill, is_spell, is_crit)
+                elseif is_miss then
+                    display_floating_damage("Miss!")
                 end
             end
         end
     end
 end)
 
--- Function to render floating combat text
 ashita.events.register('d3d_present', 'PresentCallback', function()
     local current_time = os.clock()
 
@@ -116,29 +138,60 @@ ashita.events.register('d3d_present', 'PresentCallback', function()
 
             -- Determine which window to use based on the event type
             imgui.SetNextWindowPos({damage_event.x, y_position})
-            
+
             -- Set the window size and style for each type of event
             if damage_event.is_weapon_skill then
-                imgui.SetNextWindowSize({500, 200})  -- Center window for weapon skills
+                imgui.SetNextWindowSize({800, 200})  -- Center window for weapon skills
                 imgui.Begin('WeaponSkills', true, ImGuiWindowFlags_NoTitleBar + ImGuiWindowFlags_AlwaysAutoResize + ImGuiWindowFlags_NoBackground + ImGuiWindowFlags_NoScrollbar)
-                imgui.SetWindowFontScale(3.0)
-                imgui.TextColored({1.0, 1.0, 0.0, alpha}, tostring("WeaponSkill: " .. damage_event.damage))  -- Yellow for weapon skills
+
+                -- Use the custom font
+                if my_custom_font then
+                    imgui.PushFont(my_custom_font)
+                end
+
+                imgui.SetWindowFontScale(2) 
+                imgui.TextColored({1.0, 1.0, 0, alpha},"Weaponskill: " .. damage_event.text .. " !!")  -- Yellow for weapon skills
+
+                if my_custom_font then
+                    imgui.PopFont()  -- Reset to the default font after rendering
+                end
+
             elseif damage_event.is_spell then
                 imgui.SetNextWindowSize({500, 200})  -- Right window for spells
                 imgui.Begin('Spells', true, ImGuiWindowFlags_NoTitleBar + ImGuiWindowFlags_AlwaysAutoResize + ImGuiWindowFlags_NoBackground + ImGuiWindowFlags_NoScrollbar)
-                imgui.SetWindowFontScale(2.0)
-                imgui.TextColored({0.0, 0.5, 1.0, alpha}, tostring("Spell: " .. damage_event.damage))  -- Blue for spells
+
+                if my_custom_font then
+                    imgui.PushFont(my_custom_font)
+                end
+
+                imgui.SetWindowFontScale(3) 
+                imgui.TextColored({0.0, 0.75, 1.0, alpha},damage_event.text)  -- Blue for spells
+
+                if my_custom_font then
+                    imgui.PopFont()
+                end
+
             else
                 imgui.SetNextWindowSize({500, 200})  -- Left window for melee hits
                 imgui.Begin('MeleeHits', true, ImGuiWindowFlags_NoTitleBar + ImGuiWindowFlags_AlwaysAutoResize + ImGuiWindowFlags_NoBackground + ImGuiWindowFlags_NoScrollbar)
-                imgui.SetWindowFontScale(2.0)
-                imgui.TextColored({1.0, 1.0, 1.0, alpha}, tostring("Melee: " .. damage_event.damage))  -- White for melee hits
+
+                if my_custom_font then
+                    imgui.PushFont(my_custom_font)
+                end
+
+                imgui.SetWindowFontScale(2) 
+                imgui.TextColored({0.9, 0.9, 0.9, alpha},"Melee: " .. damage_event.text)  -- White for melee hits
+
+                if my_custom_font then
+                    imgui.PopFont()
+                end
             end
 
             imgui.End()
         end
     end
 end)
+
 
 -- Command to view the damage log
 ashita.events.register('command', 'CommandEvent', function(e)
