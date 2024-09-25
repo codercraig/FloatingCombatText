@@ -36,7 +36,7 @@ local function display_floating_damage(damage, index, is_weapon_skill, is_spell,
     local x_position = center_x
     local y_position = center_y
     if is_weapon_skill then
-        x_position = center_x  -- Middle of the screen for weapon skills
+        x_position = center_x - 350  -- Middle of the screen for weapon skills
         y_position = center_y - 350
     elseif is_spell then
         x_position = center_x + 250 -- Right for spells
@@ -149,7 +149,7 @@ ashita.events.register('d3d_present', 'PresentCallback', function()
                     imgui.PushFont(my_custom_font)
                 end
 
-                imgui.SetWindowFontScale(2) 
+                imgui.SetWindowFontScale(3) 
                 imgui.TextColored({1.0, 1.0, 0, alpha},"Weaponskill: " .. damage_event.text .. " !!")  -- Yellow for weapon skills
 
                 if my_custom_font then
